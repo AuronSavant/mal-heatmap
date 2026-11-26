@@ -85,7 +85,7 @@ def render(counts, path):
     start -= timedelta(days=(start.weekday() + 1) % 7)  # align to Sunday
     weeks = (end - start).days // 7 + 1
 
-    cell, gap, left, top = 12, 3, 34, 30
+    cell, gap, left, top = 12, 3, 34, 38
     w = left + weeks * (cell + gap) + 12
     h = top + 7 * (cell + gap) + 36
     bg = (30, 33, 40, 255)
@@ -93,16 +93,12 @@ def render(counts, path):
     d = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
-    palette = [(45, 51, 59), (14, 68, 41), (0, 109, 50), (38, 166, 65), (57, 211, 83)]
-    peak = max(counts.values(), default=1)
+    palette = [(45, 51, 59), (38, 120, 70), (46, 160, 67), (57, 211, 83), (140, 255, 150)]
 
-    def level(n):
-        if n == 0:
-            return 0
-        q = n / peak
-        return 1 if q <= .25 else 2 if q <= .5 else 3 if q <= .75 else 4
+    def level(n):  # fixed thresholds so one busy day doesn't wash out the rest
+        return 0 if n == 0 else 1 if n == 1 else 2 if n == 2 else 3 if n <= 4 else 4
 
-    d.text((left, 8), f"{USER} - MyAnimeList activity, last 12 months "
+    d.text((left, 6), f"{USER} - MyAnimeList activity, last 12 months "
                       f"({sum(v for k, v in counts.items() if k >= start.isoformat())} updates)",
            fill=(200, 205, 215), font=font)
     for label, row in (("Mon", 1), ("Wed", 3), ("Fri", 5)):
@@ -118,7 +114,7 @@ def render(counts, path):
             d.rounded_rectangle([x, y, x + cell, y + cell], 2,
                                 fill=palette[level(counts.get(day.isoformat(), 0))])
             if j == 0 and day.month != last_month and day.day <= 7:
-                d.text((x, top - 14), day.strftime("%b"), fill=(140, 146, 158), font=font)
+                d.text((x, top - 13), day.strftime("%b"), fill=(140, 146, 158), font=font)
                 last_month = day.month
 
     ly = h - 20

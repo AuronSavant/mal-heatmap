@@ -60,11 +60,11 @@ def episodes_per_day(store):
     by_item = {}
     for kind, item, num, iso in store.values():
         by_item.setdefault((kind, item), []).append((iso, num))
-    counts = Counter()
-    for rows in by_item.values():
+    counts = {"anime": Counter(), "manga": Counter()}
+    for (kind, _), rows in by_item.items():
         prev = 0
         for iso, num in sorted(rows):
-            counts[iso[:10]] += num - prev if num > prev else 1
+            counts[kind][iso[:10]] += num - prev if num > prev else 1
             prev = num
     return counts
 
@@ -76,30 +76,32 @@ def load_store():
     return {}
 
 
+ANIME = [(38, 120, 70), (46, 160, 67), (57, 211, 83), (140, 255, 150)]   # dark -> lightest
+MANGA = [(40, 80, 150), (50, 115, 205), (80, 160, 245), (160, 205, 255)]
+EMPTY = (45, 51, 59)
+BG = (18, 18, 18)
+LABEL = (140, 146, 158)
+
+
+def level(n):  # 1-2 dark, 3-4 medium, 5-6 bright, 7+ lightest
+    return 0 if n == 0 else 1 if n <= 2 else 2 if n <= 4 else 3 if n <= 6 else 4
+
+
 def render(counts, path):
     end = date.today()
     start = end - timedelta(days=364)
     start -= timedelta(days=(start.weekday() + 1) % 7)  # align to Sunday
     weeks = (end - start).days // 7 + 1
 
-    cell, gap, left, top = 12, 3, 34, 38
+    cell, gap, left, top = 12, 3, 34, 20
     w = left + weeks * (cell + gap) + 12
-    h = top + 7 * (cell + gap) + 36
-    bg = (30, 33, 40, 255)
-    img = Image.new("RGBA", (w, h), bg)
+    h = top + 7 * (cell + gap) + 40
+    img = Image.new("RGB", (w, h), BG)
     d = ImageDraw.Draw(img)
     font = ImageFont.load_default()
 
-    palette = [(45, 51, 59), (38, 120, 70), (46, 160, 67), (57, 211, 83), (140, 255, 150)]
-
-    def level(n):  # fixed thresholds so one busy day doesn't wash out the rest
-        return 0 if n == 0 else 1 if n == 1 else 2 if n <= 3 else 3 if n <= 6 else 4
-
-    d.text((left, 6), f"{USER} - episodes/chapters per day, last 12 months "
-                      f"({sum(v for k, v in counts.items() if k >= start.isoformat())} episodes)",
-           fill=(200, 205, 215), font=font)
     for label, row in (("Mon", 1), ("Wed", 3), ("Fri", 5)):
-        d.text((6, top + row * (cell + gap) + 1), label, fill=(140, 146, 158), font=font)
+        d.text((6, top + row * (cell + gap) + 1), label, fill=LABEL, font=font)
 
     last_month = None
     for i in range(weeks):
@@ -108,19 +110,25 @@ def render(counts, path):
             if day > end:
                 continue
             x, y = left + i * (cell + gap), top + j * (cell + gap)
-            d.rounded_rectangle([x, y, x + cell, y + cell], 2,
-                                fill=palette[level(counts.get(day.isoformat(), 0))])
+            iso = day.isoformat()
+            a, m = counts["anime"].get(iso, 0), counts["manga"].get(iso, 0)
+            # whichever medium has the bigger number wins the day (tie -> anime)
+            color = EMPTY if not (a or m) else (MANGA if m > a else ANIME)[level(max(a, m)) - 1]
+            d.rounded_rectangle([x, y, x + cell, y + cell], 2, fill=color)
             if j == 0 and day.month != last_month and day.day <= 7:
-                d.text((x, top - 13), day.strftime("%b"), fill=(140, 146, 158), font=font)
+                d.text((x, top - 14), day.strftime("%b"), fill=LABEL, font=font)
                 last_month = day.month
 
-    ly = h - 20
-    d.text((w - 150, ly), "Less", fill=(140, 146, 158), font=font)
-    for k, c in enumerate(palette):
-        x = w - 118 + k * (cell + 3)
-        d.rounded_rectangle([x, ly - 1, x + cell, ly - 1 + cell], 2, fill=c)
-    d.text((w - 118 + 5 * (cell + 3) + 2, ly), "More", fill=(140, 146, 158), font=font)
-    img.convert("RGB").save(path)
+    # legend: one row per medium
+    for r, (name, pal) in enumerate((("Anime", ANIME), ("Manga", MANGA))):
+        ly = h - 36 + r * (cell + 3)
+        d.text((w - 190, ly), name, fill=LABEL, font=font)
+        d.text((w - 148, ly), "Less", fill=LABEL, font=font)
+        for k, c in enumerate([EMPTY] + pal):
+            x = w - 118 + k * (cell + 3)
+            d.rounded_rectangle([x, ly - 1, x + cell, ly - 1 + cell], 2, fill=c)
+        d.text((w - 118 + 5 * (cell + 3) + 2, ly), "More", fill=LABEL, font=font)
+    img.save(path)
 
 
 def main():
@@ -132,7 +140,7 @@ def main():
         json.dump(store, f, indent=0, sort_keys=True)
     counts = episodes_per_day(store)
     render(counts, OUT)
-    print(f"{len(store)} updates, {sum(counts.values())} episodes, wrote {OUT}")
+    print(f"{len(store)} updates, anime {sum(counts['anime'].values())}, manga {sum(counts['manga'].values())}, wrote {OUT}")
 
 
 if __name__ == "__main__":

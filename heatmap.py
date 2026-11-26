@@ -30,46 +30,43 @@ def get(url):
     raise SystemExit(f"failed to fetch {url}")
 
 
-def list_events(kind):
-    """One event per list entry, on the day it was last updated."""
-    events, offset = {}, 0
-    while True:
-        rows = json.loads(get(f"https://myanimelist.net/{kind}list/{USER}/load.json?offset={offset}&status=7"))
-        for row in rows:
-            if not row.get("updated_at"):
-                continue  # manga rows only expose created_at on some lists
-            key = f"list:{kind}:{row.get('anime_id') or row.get('manga_id')}"
-            day = datetime.fromtimestamp(row["updated_at"], timezone.utc).date().isoformat()
-            events[key] = day
-        if len(rows) < 300:
-            return events
-        offset += 300
-        time.sleep(1)
-
-
 def history_events(kind):
-    """Episode/chapter level events from the recent history page."""
-    html = get(f"https://myanimelist.net/history/{USER}?type={kind}")
-    today = date.today()
-    events = {}
+    """Episode/chapter updates from the recent history page: key -> (item, num, iso datetime)."""
+    html = get(f"https://myanimelist.net/history/{USER}/{kind}")
+    now = datetime.now()
+    out = {}
     for m in re.finditer(
         r'href="/(?:anime|manga)\.php\?id=(\d+)">.*?<strong>(\d+)</strong>.*?align="right">&nbsp;([^<]+?)\s*</td>',
         html, re.S):
-        item, num, stamp = m.group(1), m.group(2), unescape(m.group(3)).strip()
+        item, num, stamp = m.group(1), int(m.group(2)), unescape(m.group(3)).strip()
+        rel = re.match(r"(Today|Yesterday),?\s*(.*)", stamp)
         try:
-            d = datetime.strptime(f"{stamp} {today.year}", "%b %d, %I:%M %p %Y").date()
+            if rel:
+                t = datetime.strptime(rel.group(2), "%I:%M %p").time() if rel.group(2) else datetime.min.time()
+                day = now.date() - timedelta(days=0 if rel.group(1) == "Today" else 1)
+                dt = datetime.combine(day, t)
+            else:
+                dt = datetime.strptime(f"{stamp} {now.year}", "%b %d, %I:%M %p %Y")
+                if dt > now + timedelta(days=1):
+                    dt = dt.replace(year=dt.year - 1)
         except ValueError:
-            continue  # "Today, 3:05 PM" / "Yesterday" style stamps
-        if d > today:
-            d = d.replace(year=d.year - 1)
-        events[f"hist:{kind}:{item}:{num}:{stamp}"] = d.isoformat()
-    # relative stamps ("Today", "Yesterday")
-    for m in re.finditer(
-        r'href="/(?:anime|manga)\.php\?id=(\d+)">.*?<strong>(\d+)</strong>.*?align="right">&nbsp;(Today|Yesterday)[^<]*?\s*</td>',
-        html, re.S):
-        d = today if m.group(3) == "Today" else today - timedelta(days=1)
-        events[f"hist:{kind}:{m.group(1)}:{m.group(2)}:{m.group(3)}"] = d.isoformat()
-    return events
+            continue
+        out[f"{kind}:{item}:{num}:{dt.isoformat()}"] = [kind, item, num, dt.isoformat()]
+    return out
+
+
+def episodes_per_day(store):
+    """Turn progress updates into units watched per day (ep 2 -> ep 12 = 10 episodes)."""
+    by_item = {}
+    for kind, item, num, iso in store.values():
+        by_item.setdefault((kind, item), []).append((iso, num))
+    counts = Counter()
+    for rows in by_item.values():
+        prev = 0
+        for iso, num in sorted(rows):
+            counts[iso[:10]] += num - prev if num > prev else 1
+            prev = num
+    return counts
 
 
 def load_store():
@@ -96,10 +93,10 @@ def render(counts, path):
     palette = [(45, 51, 59), (38, 120, 70), (46, 160, 67), (57, 211, 83), (140, 255, 150)]
 
     def level(n):  # fixed thresholds so one busy day doesn't wash out the rest
-        return 0 if n == 0 else 1 if n == 1 else 2 if n == 2 else 3 if n <= 4 else 4
+        return 0 if n == 0 else 1 if n == 1 else 2 if n <= 3 else 3 if n <= 6 else 4
 
-    d.text((left, 6), f"{USER} - MyAnimeList activity, last 12 months "
-                      f"({sum(v for k, v in counts.items() if k >= start.isoformat())} updates)",
+    d.text((left, 6), f"{USER} - episodes/chapters per day, last 12 months "
+                      f"({sum(v for k, v in counts.items() if k >= start.isoformat())} episodes)",
            fill=(200, 205, 215), font=font)
     for label, row in (("Mon", 1), ("Wed", 3), ("Fri", 5)):
         d.text((6, top + row * (cell + gap) + 1), label, fill=(140, 146, 158), font=font)
@@ -127,18 +124,15 @@ def render(counts, path):
 
 
 def main():
-    store = load_store()
+    store = {k: v for k, v in load_store().items() if isinstance(v, list)}  # drops old list-based data
     for kind in ("anime", "manga"):
-        for k, v in list_events(kind).items():
-            # a list entry whose date moved replaces its earlier list event only
-            store[k] = v
         store.update(history_events(kind))
     os.makedirs(os.path.dirname(DATA), exist_ok=True)
     with open(DATA, "w", encoding="utf-8") as f:
         json.dump(store, f, indent=0, sort_keys=True)
-    counts = Counter(store.values())
+    counts = episodes_per_day(store)
     render(counts, OUT)
-    print(f"{len(store)} events, wrote {OUT}")
+    print(f"{len(store)} updates, {sum(counts.values())} episodes, wrote {OUT}")
 
 
 if __name__ == "__main__":
